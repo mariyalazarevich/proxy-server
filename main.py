@@ -124,6 +124,5 @@ def main():
     finally:
         proxy.close()
 
-
 if __name__ == '__main__':
     main()
