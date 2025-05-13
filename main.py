@@ -5,10 +5,8 @@ import threading
 def handle_client(client_socket):
     log_url = "Unknown"
     server_socket = None
-    logged_once = False  # Flag to track if log was already printed for this request
-
+    logged_once = False
     try:
-        # Reading the HTTP request
         request_data = client_socket.recv(4096)
         if not request_data:
             return
@@ -19,20 +17,17 @@ def handle_client(client_socket):
             client_socket.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
             return
 
-        first_line = lines[0]
-        parts = first_line.split()
-        if len(parts) < 3:
+        first_line = lines[0].split()
+        if len(first_line) < 3:
             client_socket.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
             return
+        method, uri, http_version = first_line
 
-        method, uri, http_version = parts[0], parts[1], parts[2]
-
-        host, port, path = None, 80, uri
+        host, port = None, 80
         if uri.startswith('http://'):
-            uri_part = uri.split('://', 1)[1]
-            host_port_path = uri_part.split('/', 1)
-            host_port = host_port_path[0]
-            path = '/' + host_port_path[1] if len(host_port_path) > 1 else '/'
+            uri_part = uri[7:].split('/', 1)
+            host_port = uri_part[0]
+            path = '/' + uri_part[1] if len(uri_part) > 1 else '/'
             if ':' in host_port:
                 host, port_str = host_port.split(':', 1)
                 port = int(port_str)
@@ -41,68 +36,61 @@ def handle_client(client_socket):
         else:
             for line in lines[1:]:
                 if line.lower().startswith('host:'):
-                    host_header = line.split(':', 1)[1].strip()
-                    if ':' in host_header:
-                        host, port_str = host_header.split(':', 1)
+                    host = line.split(':', 1)[1].strip()
+                    if ':' in host:
+                        host, port_str = host.split(':', 1)
                         port = int(port_str)
-                    else:
-                        host = host_header
                     break
             if not host:
                 client_socket.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
                 return
+            path = uri
 
         log_url = f"http://{host}:{port}{path}" if port != 80 else f"http://{host}{path}"
-
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.settimeout(5)
+        server_socket.settimeout(15)
         try:
             server_socket.connect((host, port))
         except Exception as e:
-            if not logged_once:  # Log only once per request
-                print(f"{log_url} - Connection Failed: {e}")
-                logged_once = True
+            print(f"{log_url} - Connection Failed: {e}")
             client_socket.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
             return
 
-        new_headers = []
-        host_added = False
+        headers = [f"{method} {path} {http_version}"]
+        host_header_added = False
         for line in lines[1:]:
             if not line.strip():
                 break
             if line.lower().startswith('host:'):
-                new_headers.append(f"Host: {host}")
-                host_added = True
+                headers.append(f"Host: {host}")
+                host_header_added = True
             else:
-                new_headers.append(line)
-        if not host_added:
-            new_headers.append(f"Host: {host}")
+                headers.append(line)
+        if not host_header_added:
+            headers.append(f"Host: {host}")
 
-        modified_request = f"{method} {path} {http_version}\r\n" + '\r\n'.join(new_headers) + "\r\n\r\n"
-        server_socket.sendall(modified_request.encode())
-
-        response = server_socket.recv(4096)
-        if response:
+        server_socket.sendall('\r\n'.join(headers).encode() + b'\r\n\r\n')
+        while True:
             try:
-                status_line = response.split(b'\r\n')[0].decode('utf-8', errors='ignore')
-                http_status = status_line.split(' ')[1]
-            except Exception:
-                http_status = 'Unknown'
-            if not logged_once:  # Log only once per request
-                print(f"{log_url} - {http_status}")
-                logged_once = True
-
-            client_socket.sendall(response)
-            while True:
                 data = server_socket.recv(4096)
                 if not data:
                     break
+                if not logged_once:
+                    try:
+                        status_line = data.split(b'\r\n')[0].decode()
+                        http_status = status_line.split(' ')[1]
+                        print(f"{log_url} - {http_status}")
+                        logged_once = True
+                    except:
+                        pass
+
                 client_socket.sendall(data)
+            except (socket.timeout, ConnectionResetError):
+                break
 
     except Exception as e:
-        if not logged_once:  # Log only once per request
-            print(f"{log_url} - Error: {e}")
-            logged_once = True
+        if not logged_once:
+            print(f"{log_url} - Processing Error: {str(e)}")
     finally:
         client_socket.close()
         if server_socket:
@@ -111,16 +99,15 @@ def handle_client(client_socket):
 
 def main():
     proxy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    proxy.bind(('0.0.0.0', 8000))
+    proxy.bind(('127.0.0.2', 8000))
     proxy.listen(5)
-    print("Proxy running on port 8000...")
-
+    print("Proxy server running on port 8000...")
     try:
         while True:
-            client, _ = proxy.accept()
+            client, addr = proxy.accept()
             threading.Thread(target=handle_client, args=(client,)).start()
     except KeyboardInterrupt:
-        print("Stopping proxy...")
+        print("Shutting down proxy...")
     finally:
         proxy.close()
 
