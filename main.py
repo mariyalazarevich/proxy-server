@@ -4,6 +4,7 @@ import threading
 
 def handle_client(client_socket):
     log_url = "Unknown"
+
     server_socket = None
     logged_once = False
     try:
